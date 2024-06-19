@@ -19,6 +19,7 @@ TEST_FLAGS ?=
 export GO111MODULE=on
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
+GO_VERSION := 1.21.11 
 
 .DEFAULT_GOAL := all
 
@@ -31,11 +32,15 @@ get:
 
 .PHONY: build
 build:
-	go install -ldflags '$(LD_FLAGS)' ./...
+	GO_VERSION=$(GO_VERSION) goreleaser build --clean
 
 .PHONY: test
 test:
 	go test $(TEST_FLAGS) -coverprofile=coverage.txt -covermode=atomic -race ./...
+
+.PHONY: itest
+itest: TEST_FLAGS := -timeout 3m -tags integration
+itest: test
 
 .PHONY: generate
 generate:

@@ -13,4 +13,4 @@ bin/
 .tools/
 .vscode/
 *.generated
-
+example_test.go

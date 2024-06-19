@@ -19,7 +19,7 @@ package model
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -108,7 +108,7 @@ func downloadEnvFile(url string) ([]byte, error) {
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status : %s", res.Status)
 	}
-	payload, err := ioutil.ReadAll(res.Body)
+	payload, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func readEnvFile(file string) ([]byte, error) {
 		}
 		return b, nil
 	}
-	return ioutil.ReadFile(file)
+	return os.ReadFile(file)
 }
 
 func loadEnvFiles(app *QbecApp, additionalFiles []string, v *validator) error {
@@ -180,9 +180,77 @@ func loadEnvFiles(app *QbecApp, additionalFiles []string, v *validator) error {
 	return nil
 }
 
+func downloadVarFile(url string) ([]byte, error) {
+	return downloadEnvFile(url)
+}
+
+func readVarFile(file string) ([]byte, error) {
+	if filematcher.IsRemoteFile(file) {
+		b, err := downloadVarFile(file)
+		if err != nil {
+			return nil, errors.Wrapf(err, "download vars from %s", file)
+		}
+		return b, nil
+	}
+	return os.ReadFile(file)
+}
+
+func loadVars(app *QbecApp, v *validator) error {
+	if app.Spec.Vars.Computed == nil {
+		app.Spec.Vars.Computed = []ComputedVar{}
+	}
+	if app.Spec.Vars.External == nil {
+		app.Spec.Vars.External = []ExternalVar{}
+	}
+	if app.Spec.Vars.TopLevel == nil {
+		app.Spec.Vars.TopLevel = []TopLevelVar{}
+	}
+	if app.Spec.DataSources == nil {
+		app.Spec.DataSources = []string{}
+	}
+
+	var varsFiles []string
+	varsFiles = append(varsFiles, app.Spec.VarFiles...)
+	var allVarsFiles []string
+	for _, filePattern := range varsFiles {
+		matchedFiles, err := filematcher.Match(filePattern)
+		if err != nil {
+			return err
+		}
+		allVarsFiles = append(allVarsFiles, matchedFiles...)
+	}
+	for _, file := range allVarsFiles {
+		b, err := readVarFile(file)
+		if err != nil {
+			return err
+		}
+		var qVars QbecVars
+		if err := yaml.Unmarshal(b, &qVars); err != nil {
+			return errors.Wrap(err, fmt.Sprintf("%s: unmarshal YAML", file))
+		}
+		errs := v.validateVarYAML(b)
+		if len(errs) > 0 {
+			return makeValError(file, errs)
+		}
+		if app.Spec.Vars.Computed, err = varsMerge(qVars.Spec.Vars.Computed, app.Spec.Vars.Computed); err != nil {
+			return err
+		}
+		if app.Spec.Vars.External, err = varsMerge(qVars.Spec.Vars.External, app.Spec.Vars.External); err != nil {
+			return err
+		}
+		if app.Spec.Vars.TopLevel, err = varsMerge(qVars.Spec.Vars.TopLevel, app.Spec.Vars.TopLevel); err != nil {
+			return err
+		}
+		if app.Spec.DataSources, err = varsMerge(qVars.Spec.DataSources, app.Spec.DataSources); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // NewApp returns an app loading its details from the supplied file.
 func NewApp(file string, envFiles []string, tag string) (*App, error) {
-	b, err := ioutil.ReadFile(file)
+	b, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
@@ -202,6 +270,10 @@ func NewApp(file string, envFiles []string, tag string) (*App, error) {
 	}
 
 	if err := loadEnvFiles(&qApp, envFiles, v); err != nil {
+		return nil, err
+	}
+
+	if err := loadVars(&qApp, v); err != nil {
 		return nil, err
 	}
 
@@ -372,6 +444,41 @@ func deepMerge(base, overrides map[string]interface{}) map[string]interface{} {
 		ret[k] = v2
 	}
 	return ret
+}
+
+func getVarName(i interface{}) (string, error) {
+	switch v := i.(type) {
+	case string:
+		return strings.Split(v, "?")[0], nil
+	case ComputedVar:
+		return v.Name, nil
+	case ExternalVar:
+		return v.Name, nil
+	default:
+		return "", errors.New("unexpected type of qbec Variable")
+	}
+}
+
+func varsMerge[T any](base, main []T) ([]T, error) {
+	ret := make([]T, 0)
+	seen := make(map[string]bool, len(main))
+	for _, element := range main {
+		varName, err := getVarName(element)
+		if err != nil {
+			return ret, err
+		}
+		seen[varName] = true
+	}
+	for _, element := range base {
+		varName, err := getVarName(element)
+		if err != nil {
+			return ret, err
+		}
+		if !seen[varName] {
+			ret = append(ret, element)
+		}
+	}
+	return append(ret, main...), nil
 }
 
 // Properties returns the configured properties for the supplied environment, merge patched into
