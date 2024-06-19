@@ -19,7 +19,7 @@ package model
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -108,7 +108,7 @@ func downloadEnvFile(url string) ([]byte, error) {
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status : %s", res.Status)
 	}
-	payload, err := ioutil.ReadAll(res.Body)
+	payload, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -232,10 +232,18 @@ func loadVars(app *QbecApp, v *validator) error {
 		if len(errs) > 0 {
 			return makeValError(file, errs)
 		}
-		app.Spec.Vars.Computed = append(qVars.Spec.Vars.Computed, app.Spec.Vars.Computed...)
-		app.Spec.Vars.External = append(qVars.Spec.Vars.External, app.Spec.Vars.External...)
-		app.Spec.Vars.TopLevel = append(qVars.Spec.Vars.TopLevel, app.Spec.Vars.TopLevel...)
-		app.Spec.DataSources = append(qVars.Spec.DataSources, app.Spec.DataSources...)
+		if app.Spec.Vars.Computed, err = varsMerge(qVars.Spec.Vars.Computed, app.Spec.Vars.Computed); err != nil {
+			return err
+		}
+		if app.Spec.Vars.External, err = varsMerge(qVars.Spec.Vars.External, app.Spec.Vars.External); err != nil {
+			return err
+		}
+		if app.Spec.Vars.TopLevel, err = varsMerge(qVars.Spec.Vars.TopLevel, app.Spec.Vars.TopLevel); err != nil {
+			return err
+		}
+		if app.Spec.DataSources, err = varsMerge(qVars.Spec.DataSources, app.Spec.DataSources); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -436,6 +444,41 @@ func deepMerge(base, overrides map[string]interface{}) map[string]interface{} {
 		ret[k] = v2
 	}
 	return ret
+}
+
+func getVarName(i interface{}) (string, error) {
+	switch v := i.(type) {
+	case string:
+		return strings.Split(v, "?")[0], nil
+	case ComputedVar:
+		return v.Name, nil
+	case ExternalVar:
+		return v.Name, nil
+	default:
+		return "", errors.New("unexpected type of qbec Variable")
+	}
+}
+
+func varsMerge[T any](base, main []T) ([]T, error) {
+	ret := make([]T, 0)
+	seen := make(map[string]bool, len(main))
+	for _, element := range main {
+		varName, err := getVarName(element)
+		if err != nil {
+			return ret, err
+		}
+		seen[varName] = true
+	}
+	for _, element := range base {
+		varName, err := getVarName(element)
+		if err != nil {
+			return ret, err
+		}
+		if !seen[varName] {
+			ret = append(ret, element)
+		}
+	}
+	return append(ret, main...), nil
 }
 
 // Properties returns the configured properties for the supplied environment, merge patched into
